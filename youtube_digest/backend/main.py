@@ -171,8 +171,20 @@ async def summarize_endpoint(
     request: SummarizeRequest,
     x_openai_key: Optional[str] = Header(None)
 ):
-    summary = summarize_text(request.text, custom_key=x_openai_key)
-    return {"summary": summary}
+    print(f"DEBUG: /summarize called. Text length: {len(request.text)} chars")
+    
+    if not request.text or len(request.text) < 50:
+        print("DEBUG: Text too short or empty.")
+        return {"summary": "Transcript was empty or too short."}
+
+    print("DEBUG: Sending text to OpenAI for summarization...")
+    try:
+        summary = summarize_text(request.text, custom_key=x_openai_key)
+        print("DEBUG: Summarization successful.")
+        return {"summary": summary}
+    except Exception as e:
+        print(f"ERROR: Summarization failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/digest", response_model=List[VideoSummary])
 async def get_digest(

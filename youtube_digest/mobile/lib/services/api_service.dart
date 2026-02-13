@@ -57,15 +57,21 @@ class ApiService {
         }
 
         if (channel == null) {
-           print('Channel not found: $channelInput');
+           print('[YT-DEBUG] Channel not found after search: $channelInput');
            continue;
         }
+        
+        print('[YT-DEBUG] Found channel: ${channel.title}');
 
         // 2. Get Uploads (Latest Video)
         var uploads = await _yt.channels.getUploads(channel.id).take(1).toList();
-        if (uploads.isEmpty) continue;
+        if (uploads.isEmpty) {
+            print('[YT-DEBUG] No videos found for ${channel.title}');
+            continue;
+        }
         
         var video = uploads.first;
+        print('[YT-DEBUG] Using video: ${video.title} (${video.id})');
         
         // 3. Get Transcript
         String transcriptText = "";
@@ -76,22 +82,43 @@ class ApiService {
            ClosedCaptionTrackInfo? trackToUse;
            if (tracks.isNotEmpty) {
               trackToUse = tracks.first;
+              print('[YT-DEBUG] Found English captions.');
            } else if (manifest.tracks.isNotEmpty) {
               trackToUse = manifest.tracks.first;
+              print('[YT-DEBUG] Found non-English captions (using first available).');
            }
 
            if (trackToUse != null) {
               var track = await _yt.videos.closedCaptions.get(trackToUse);
               transcriptText = track.captions.map((c) => c.text).join(' ');
+              print('[YT-DEBUG] Transcript fetched successfully. Length: ${transcriptText.length}');
+           } else {
+              print('[YT-DEBUG] No caption tracks found.');
            }
         } catch (e) {
-           print("No transcript for ${video.id}: $e");
+           print("[YT-DEBUG] Error fetching transcript for ${video.id}: $e");
         }
 
         // 4. Summarize (Backend call)
         String summary = "No transcript available.";
         if (transcriptText.isNotEmpty) {
-            summary = await _summarizeText(transcriptText, openaiKey) ?? "Summary generation failed.";
+            print('[YT-DEBUG] Sending transcript to backend for summarization...');
+            try {
+                final summaryResult = await _summarizeText(transcriptText, openaiKey);
+                if (summaryResult != null) {
+                    summary = summaryResult;
+                    print('[YT-DEBUG] Summary received successfully.');
+                } else {
+                    summary = "Summary generation failed server-side.";
+                    print('[YT-DEBUG] Summary generation failed on server.');
+                }
+            } catch (e) {
+                summary = "Error contacting summarization service.";
+                print('[YT-DEBUG] Exception calling _summarizeText: $e');
+            }
+        } else {
+            print('[YT-DEBUG] No transcript found. Skipping summarization.');
+            summary = "Cannot summarize video without captions/transcript.";
         }
 
         summaries.add(VideoSummary(
