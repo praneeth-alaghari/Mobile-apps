@@ -13,6 +13,16 @@ load_dotenv()
 
 app = FastAPI(title="YouTube Digest Backend")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 # Configure OpenAI
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 yt_transcript_api = YouTubeTranscriptApi()
