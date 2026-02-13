@@ -1,70 +1,179 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/video_summary.dart';
 import 'storage_service.dart';
 
 class ApiService {
   // Update this to your local IP or production URL
-  static const String baseUrl = 'http://192.168.68.105:8000'; // Your PC's Wi-Fi IP address
+  static const String baseUrl = 'https://youtube-digest-api.onrender.com'; // Production URL
+
+  final YoutubeExplode _yt = YoutubeExplode();
 
   Future<List<VideoSummary>> getDigest(List<String> channels) async {
     if (channels.isEmpty) return [];
 
-    final queryParameters = {
-      'channels': channels,
-    };
-    
-    // Constructing query string for list of parameters
-    String queryString = channels.map((c) => 'channels=${Uri.encodeComponent(c)}').join('&');
-    final url = Uri.parse('$baseUrl/digest?$queryString');
-
+    List<VideoSummary> summaries = [];
     final storage = StorageService();
     final openaiKey = await storage.getOpenAiApiKey();
-    final youtubeKey = await storage.getYoutubeApiKey();
-    
-    Map<String, String> headers = {};
+
+    for (String channelInput in channels) {
+      try {
+        Channel? channel;
+        // 1. Resolve Channel
+        String query = channelInput;
+        // Basic cleanup
+        if (query.contains('youtube.com/')) {
+           if (query.contains('/channel/')) {
+             query = query.split('/channel/').last;
+           } else if (query.contains('/@')) {
+             query = query.split('/@').last;
+             if (!query.startsWith('@')) query = '@' + query;
+           }
+        }
+
+        if (query.startsWith('UC') && query.length >= 24) {
+             try {
+                channel = await _yt.channels.get(ChannelId(query));
+             } catch (_) {
+                // Ignore, fallback to search
+             }
+        } 
+        
+        if (channel == null) {
+            // Search
+             var results = await _yt.search(channelInput);
+             if (results.isNotEmpty) {
+                 var searchChannel = results.whereType<SearchChannel>().firstOrNull;
+                 if (searchChannel != null) {
+                     channel = await _yt.channels.get(searchChannel.id);
+                 } else {
+                     var video = results.whereType<Video>().firstOrNull;
+                     if (video != null) {
+                         channel = await _yt.channels.get(video.channelId);
+                     }
+                 }
+             }
+        }
+
+        if (channel == null) {
+           print('Channel not found: $channelInput');
+           continue;
+        }
+
+        // 2. Get Uploads (Latest Video)
+        var uploads = await _yt.channels.getUploads(channel.id).take(1).toList();
+        if (uploads.isEmpty) continue;
+        
+        var video = uploads.first;
+        
+        // 3. Get Transcript
+        String transcriptText = "";
+        try {
+           var manifest = await _yt.videos.closedCaptions.getManifest(video.id);
+           var tracks = manifest.getByLanguage('en'); 
+           
+           ClosedCaptionTrackInfo? trackToUse;
+           if (tracks.isNotEmpty) {
+              trackToUse = tracks.first;
+           } else if (manifest.tracks.isNotEmpty) {
+              trackToUse = manifest.tracks.first;
+           }
+
+           if (trackToUse != null) {
+              var track = await _yt.videos.closedCaptions.get(trackToUse);
+              transcriptText = track.captions.map((c) => c.text).join(' ');
+           }
+        } catch (e) {
+           print("No transcript for ${video.id}: $e");
+        }
+
+        // 4. Summarize (Backend call)
+        String summary = "No transcript available.";
+        if (transcriptText.isNotEmpty) {
+            summary = await _summarizeText(transcriptText, openaiKey) ?? "Summary generation failed.";
+        }
+
+        summaries.add(VideoSummary(
+            videoId: video.id.value,
+            title: video.title,
+            channelName: channel.title,
+            publishedAt: video.publishDate?.toIso8601String() ?? DateTime.now().toIso8601String(),
+            summary: summary,
+            thumbnailUrl: video.thumbnails.highResUrl,
+        ));
+
+      } catch (e) {
+        print('Error processing $channelInput: $e');
+      }
+    }
+    return summaries;
+  }
+
+  Future<String?> _summarizeText(String text, String? openaiKey) async {
+    final url = Uri.parse('$baseUrl/summarize');
+    Map<String, String> headers = {
+      'Content-Type': 'application/json',
+    };
     if (openaiKey != null && openaiKey.isNotEmpty) {
       headers['X-OpenAI-Key'] = openaiKey;
     }
-    if (youtubeKey != null && youtubeKey.isNotEmpty) {
-      headers['X-YouTube-Key'] = youtubeKey;
-    }
 
     try {
-      final response = await http.get(url, headers: headers).timeout(const Duration(minutes: 5));
+      final response = await http.post(
+        url, 
+        headers: headers, 
+        body: json.encode({'text': text})
+      ).timeout(const Duration(minutes: 5));
 
       if (response.statusCode == 200) {
-        List<dynamic> data = json.decode(response.body);
-        return data.map((json) => VideoSummary.fromJson(json)).toList();
+        var data = json.decode(response.body);
+        return data['summary'];
       } else {
-        throw Exception('Failed to load digest: ${response.statusCode}');
+        print('Backend summarization failed: ${response.statusCode} - ${response.body}');
+        return null;
       }
     } catch (e) {
-      print('ApiService Error: $e');
-      rethrow;
+       print('Error calling summarize endpoint: $e');
+       return null;
     }
   }
 
   Future<Map<String, dynamic>> validateChannel(String url) async {
-    final uri = Uri.parse('$baseUrl/validate-channel?url=${Uri.encodeComponent(url)}');
-    
-    final storage = StorageService();
-    final youtubeKey = await storage.getYoutubeApiKey();
-    
-    Map<String, String> headers = {};
-    if (youtubeKey != null && youtubeKey.isNotEmpty) {
-      headers['X-YouTube-Key'] = youtubeKey;
-    }
+      try {
+          Channel? channel;
+          
+          if (url.startsWith('UC') && url.length >= 24) {
+             try {
+                channel = await _yt.channels.get(ChannelId(url));
+             } catch (_) {}
+          }
 
-    try {
-      final response = await http.get(uri, headers: headers);
-      if (response.statusCode == 200) {
-        return json.decode(response.body);
-      } else {
-        return {'is_valid': false, 'error': 'Server error: ${response.statusCode}'};
+          if (channel == null) {
+             var results = await _yt.search(url);
+             if (results.isNotEmpty) {
+                 var searchChannel = results.whereType<SearchChannel>().firstOrNull;
+                 if (searchChannel != null) {
+                     channel = await _yt.channels.get(searchChannel.id);
+                 } else {
+                     var video = results.whereType<Video>().firstOrNull;
+                     if (video != null) {
+                         channel = await _yt.channels.get(video.channelId);
+                     }
+                 }
+             }
+          }
+          
+          if (channel != null) {
+             return {
+                  'is_valid': true,
+                  'channel_name': channel.title,
+                  'channel_thumbnail': channel.logoUrl
+             };
+          }
+          return {'is_valid': false, 'error': 'Channel not found'};
+      } catch (e) {
+          return {'is_valid': false, 'error': e.toString()};
       }
-    } catch (e) {
-      return {'is_valid': false, 'error': e.toString()};
-    }
   }
 }

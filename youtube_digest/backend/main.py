@@ -163,6 +163,17 @@ def summarize_text(text: str, custom_key: Optional[str] = None) -> str:
         print(f"Error summarizing with OpenAI: {e}")
         return "Summary generation failed."
 
+class SummarizeRequest(BaseModel):
+    text: str
+    
+@app.post("/summarize")
+async def summarize_endpoint(
+    request: SummarizeRequest,
+    x_openai_key: Optional[str] = Header(None)
+):
+    summary = summarize_text(request.text, custom_key=x_openai_key)
+    return {"summary": summary}
+
 @app.get("/digest", response_model=List[VideoSummary])
 async def get_digest(
     channels: List[str] = Query(...),

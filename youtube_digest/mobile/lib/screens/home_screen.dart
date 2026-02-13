@@ -159,7 +159,14 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Column(
         children: [
-          if (_isLoading) const LinearProgressIndicator(),
+          if (_isLoading) ...[
+            const LinearProgressIndicator(),
+            const SizedBox(height: 8),
+            const Text(
+              "Waking up server... this may take a few seconds ☕",
+              style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+            ),
+          ],
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
