@@ -73,30 +73,17 @@ class ApiService {
         var video = uploads.first;
         print('[YT-DEBUG] Using video: ${video.title} (${video.id})');
         
-        // 3. Get Transcript
+        // 3. Get Transcript (using InnerTube API for robustness)
         String transcriptText = "";
         try {
-           var manifest = await _yt.videos.closedCaptions.getManifest(video.id);
-           var tracks = manifest.getByLanguage('en'); 
-           
-           ClosedCaptionTrackInfo? trackToUse;
-           if (tracks.isNotEmpty) {
-              trackToUse = tracks.first;
-              print('[YT-DEBUG] Found English captions.');
-           } else if (manifest.tracks.isNotEmpty) {
-              trackToUse = manifest.tracks.first;
-              print('[YT-DEBUG] Found non-English captions (using first available).');
-           }
-
-           if (trackToUse != null) {
-              var track = await _yt.videos.closedCaptions.get(trackToUse);
-              transcriptText = track.captions.map((c) => c.text).join(' ');
+           transcriptText = await _fetchTranscriptInnerTube(video.id.value);
+           if (transcriptText.isNotEmpty) {
               print('[YT-DEBUG] Transcript fetched successfully. Length: ${transcriptText.length}');
            } else {
-              print('[YT-DEBUG] No caption tracks found.');
+              print('[YT-DEBUG] No transcript found for ${video.id}.');
            }
         } catch (e) {
-           print("[YT-DEBUG] Error fetching transcript for ${video.id}: $e");
+           print("[YT-DEBUG] Error fetching transcript via InnerTube for ${video.id}: $e");
         }
 
         // 4. Summarize (Backend call)
@@ -117,7 +104,7 @@ class ApiService {
                 print('[YT-DEBUG] Exception calling _summarizeText: $e');
             }
         } else {
-            print('[YT-DEBUG] No transcript found. Skipping summarization.');
+            print('[YT-DEBUG] Skipping summarization due to missing transcript.');
             summary = "Cannot summarize video without captions/transcript.";
         }
 
@@ -135,6 +122,65 @@ class ApiService {
       }
     }
     return summaries;
+  }
+
+  Future<String> _fetchTranscriptInnerTube(String videoId) async {
+    try {
+      final watchUrl = 'https://www.youtube.com/watch?v=$videoId';
+      final response = await http.get(Uri.parse(watchUrl), headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      });
+      
+      if (response.statusCode != 200) return "";
+      
+      final html = response.body;
+      final apiKeyMatch = RegExp(r'"INNERTUBE_API_KEY":"([^"]+)"').firstMatch(html);
+      if (apiKeyMatch == null) return "";
+      
+      final apiKey = apiKeyMatch.group(1);
+      final apiUrl = 'https://www.youtube.com/youtubei/v1/player?key=$apiKey';
+      final context = {
+        "context": {
+          "client": {
+            "clientName": "ANDROID",
+            "clientVersion": "20.10.38"
+          }
+        },
+        "videoId": videoId
+      };
+      
+      final apiResp = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(context)
+      );
+      
+      if (apiResp.statusCode != 200) return "";
+      
+      final data = json.decode(apiResp.body);
+      final captions = data['captions']?['playerCaptionsTracklistRenderer'];
+      if (captions == null || captions['captionTracks'] == null) return "";
+      
+      List tracks = captions['captionTracks'];
+      if (tracks.isEmpty) return "";
+      
+      // Try English first, then first available
+      var track = tracks.firstWhere(
+        (t) => t['languageCode'] == 'en',
+        orElse: () => tracks.first
+      );
+      
+      final transcriptResp = await http.get(Uri.parse(track['baseUrl']));
+      if (transcriptResp.statusCode == 200) {
+        // Basic cleanup of XML/SRV tags if necessary, 
+        // but OpenAI is good at ignoring tags.
+        // Let's at least remove XML tags for efficiency.
+        return transcriptResp.body.replaceAll(RegExp(r'<[^>]*>'), ' ');
+      }
+    } catch (e) {
+      print('[YT-DEBUG] InnerTube Error: $e');
+    }
+    return "";
   }
 
   Future<String?> _summarizeText(String text, String? openaiKey) async {
