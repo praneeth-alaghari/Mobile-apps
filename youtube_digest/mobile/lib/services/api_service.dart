@@ -5,7 +5,7 @@ import 'storage_service.dart';
 
 class ApiService {
   // Update this to your local IP or production URL
-  static const String baseUrl = 'http://10.0.2.2:8000'; // Special IP for Android emulator to access localhost
+  static const String baseUrl = 'http://192.168.68.105:8000'; // Your PC's Wi-Fi IP address
 
   Future<List<VideoSummary>> getDigest(List<String> channels) async {
     if (channels.isEmpty) return [];
